@@ -9,7 +9,7 @@ output "id" {
 }
 
 output "outputs" {
-  value       = "${var.enabled == "true" ? jsonencode(aws_cloudformation_stack.default.*.outputs) : jsonencode(map())}"
+  value       = "${var.enabled == "true" ? jsonencode(aws_cloudformation_stack.default.outputs) : jsonencode(map())}"
   description = "Outputs of the Stack"
 }
 
