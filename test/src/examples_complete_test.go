@@ -2,6 +2,7 @@ package test
 
 import (
 	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -24,4 +25,14 @@ func TestExamplesComplete(t *testing.T) {
 
 	// This will run `terraform init` and `terraform apply` and fail the test if there are any errors
 	terraform.InitAndApply(t, terraformOptions)
+
+	// Run `terraform output` to get the value of an output variable
+	name := terraform.Output(t, terraformOptions, "name")
+	// Verify we're getting back the outputs we expect
+	assert.Equal(t, "eg-test-cloudformation-stack", name)
+
+	// Run `terraform output` to get the value of an output variable
+	id := terraform.Output(t, terraformOptions, "id")
+	// Verify we're getting back the outputs we expect
+	assert.Contains(t, id, "stack/eg-test-cloudformation-stack")
 }
