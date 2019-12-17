@@ -1,3 +1,8 @@
+variable "region" {
+  type        = string
+  description = "AWS Region"
+}
+
 variable "enabled" {
   type        = bool
   description = "Set to false to prevent the module from creating any resources"
@@ -97,4 +102,3 @@ variable "policy_body" {
   default     = ""
   description = "Structure containing the stack policy body"
 }
-

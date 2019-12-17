@@ -9,7 +9,7 @@
 | enabled | Set to false to prevent the module from creating any resources | bool | `true` | no |
 | environment | Environment, e.g. 'prod', 'staging', 'dev', 'pre-prod', 'UAT' | string | `` | no |
 | label_order | The naming order of the id output and Name tag | list(string) | `<list>` | no |
-| name | Solution name, e.g. 'app' or 'jenkins' | string | `` | no |
+| name | Solution name, e.g. 'app' or 'jenkins' | string | - | yes |
 | namespace | Namespace, which could be your organization name or abbreviation, e.g. 'eg' or 'cp' | string | `` | no |
 | on_failure | Action to be taken if stack creation fails. This must be one of: `DO_NOTHING`, `ROLLBACK`, or `DELETE` | string | `ROLLBACK` | no |
 | parameters | Key-value map of input parameters for the Stack Set template. (_e.g._ map("BusinessUnit","ABC") | map(string) | `<map>` | no |
@@ -24,7 +24,7 @@
 
 | Name | Description |
 |------|-------------|
-| id | ID of the Stack |
-| name | Name of the Stack |
-| outputs | Outputs of the Stack |
+| id | ID of the CloudFormation Stack |
+| name | Name of the CloudFormation Stack |
+| outputs | Outputs of the CloudFormation Stack |
 
