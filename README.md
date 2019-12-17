@@ -42,10 +42,10 @@
 
 [![Cloud Posse][logo]](https://cpco.io/homepage)
 
-# terraform-aws-cloudformation-stack [![Build Status](https://g.codefresh.io/api/badges/pipeline/cloudposse/cloudposse%2Fterraform-aws-cloudformation-stack%2Flint?type=cf-1)](https://g.codefresh.io/public/accounts/cloudposse/pipelines/cloudposse/terraform-aws-cloudformation-stack/lint) [![Latest Release](https://img.shields.io/github/release/cloudposse/terraform-aws-cloudformation-stack.svg)](https://github.com/cloudposse/terraform-aws-cloudformation-stack/releases/latest) [![Slack Community](https://slack.cloudposse.com/badge.svg)](https://slack.cloudposse.com)
+# terraform-aws-cloudformation-stack [![Codefresh Build Status](https://g.codefresh.io/api/badges/pipeline/cloudposse/terraform-modules%2Fterraform-aws-cloudformation-stack?type=cf-1)](https%3A%2F%2Fg.codefresh.io%2Fpublic%2Faccounts%2Fcloudposse%2Fpipelines%2F5df940b46baea57879de758b) [![Latest Release](https://img.shields.io/github/release/cloudposse/terraform-aws-cloudformation-stack.svg)](https://github.com/cloudposse/terraform-aws-cloudformation-stack/releases/latest) [![Slack Community](https://slack.cloudposse.com/badge.svg)](https://slack.cloudposse.com)
 
 
-Terraform module to provision Cloudformation Stack.
+Terraform module to provision CloudFormation Stack.
 
 
 ---
@@ -86,14 +86,18 @@ We literally have [*hundreds of terraform modules*][terraform_modules] that are 
 Instead pin to the release tag (e.g. `?ref=tags/x.y.z`) of one of our [latest releases](https://github.com/cloudposse/terraform-aws-cloudformation-stack/releases).
 
 
+For a complete example, see [examples/complete](examples/complete).
+
+For automated tests of the complete example using [bats](https://github.com/bats-core/bats-core) and [Terratest](https://github.com/gruntwork-io/terratest) (which tests and deploys the example on AWS), see [test](test).
+
 This example creates stack from CIS cloudformation template.
 
 ```hcl
-module "default" {
-  source = "git::https://github.com/cloudposse/terraform-aws-cloudformation-stack.git?ref=init"
+module "cloudformation_stack" {
+  source = "git::https://github.com/cloudposse/terraform-aws-cloudformation-stack.git?ref=master"
 
-  enabled            = "true"
-  namespace          = "cp"
+  enabled            = true
+  namespace          = "eg"
   stage              = "prod"
   name               = "app"
   template_url       = "https://aws-quickstart.s3.amazonaws.com/quickstart-compliance-cis-benchmark/templates/main.template"
@@ -127,7 +131,7 @@ module "default" {
 | enabled | Set to false to prevent the module from creating any resources | bool | `true` | no |
 | environment | Environment, e.g. 'prod', 'staging', 'dev', 'pre-prod', 'UAT' | string | `` | no |
 | label_order | The naming order of the id output and Name tag | list(string) | `<list>` | no |
-| name | Solution name, e.g. 'app' or 'jenkins' | string | `` | no |
+| name | Solution name, e.g. 'app' or 'jenkins' | string | - | yes |
 | namespace | Namespace, which could be your organization name or abbreviation, e.g. 'eg' or 'cp' | string | `` | no |
 | on_failure | Action to be taken if stack creation fails. This must be one of: `DO_NOTHING`, `ROLLBACK`, or `DELETE` | string | `ROLLBACK` | no |
 | parameters | Key-value map of input parameters for the Stack Set template. (_e.g._ map("BusinessUnit","ABC") | map(string) | `<map>` | no |
@@ -142,9 +146,9 @@ module "default" {
 
 | Name | Description |
 |------|-------------|
-| id | ID of the Stack |
-| name | Name of the Stack |
-| outputs | Outputs of the Stack |
+| id | ID of the CloudFormation Stack |
+| name | Name of the CloudFormation Stack |
+| outputs | Outputs of the CloudFormation Stack |
 
 
 
@@ -285,11 +289,15 @@ Check out [our other projects][github], [follow us on twitter][twitter], [apply 
 
 ### Contributors
 
-|  [![Igor Rodionov][goruha_avatar]][goruha_homepage]<br/>[Igor Rodionov][goruha_homepage] |
-|---|
+|  [![Igor Rodionov][goruha_avatar]][goruha_homepage]<br/>[Igor Rodionov][goruha_homepage] | [![Erik Osterman][osterman_avatar]][osterman_homepage]<br/>[Erik Osterman][osterman_homepage] | [![Andriy Knysh][aknysh_avatar]][aknysh_homepage]<br/>[Andriy Knysh][aknysh_homepage] |
+|---|---|---|
 
   [goruha_homepage]: https://github.com/goruha
   [goruha_avatar]: https://img.cloudposse.com/150x150/https://github.com/goruha.png
+  [osterman_homepage]: https://github.com/osterman
+  [osterman_avatar]: https://img.cloudposse.com/150x150/https://github.com/osterman.png
+  [aknysh_homepage]: https://github.com/aknysh
+  [aknysh_avatar]: https://img.cloudposse.com/150x150/https://github.com/aknysh.png
 
 [![README Footer][readme_footer_img]][readme_footer_link]
 [![Beacon][beacon]][website]

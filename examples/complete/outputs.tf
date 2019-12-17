@@ -1,14 +1,14 @@
 output "name" {
-  value       = join("", aws_cloudformation_stack.default.*.name)
+  value       = module.cloudformation_stack.name
   description = "Name of the CloudFormation Stack"
 }
 
 output "id" {
-  value       = join("", aws_cloudformation_stack.default.*.id)
+  value       = module.cloudformation_stack.id
   description = "ID of the CloudFormation Stack"
 }
 
 output "outputs" {
-  value       = var.enabled ? aws_cloudformation_stack.default[0].outputs : {}
+  value       = module.cloudformation_stack.outputs
   description = "Outputs of the CloudFormation Stack"
 }
