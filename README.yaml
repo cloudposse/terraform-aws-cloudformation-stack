@@ -46,7 +46,9 @@ usage: |-
 
   ```hcl
   module "cloudformation_stack" {
-    source = "git::https://github.com/cloudposse/terraform-aws-cloudformation-stack.git?ref=master"
+    source = "cloudposse/cloudformation-stack/aws"
+    # Cloud Posse recommends pinning every module to a specific version
+    # version = "x.x.x"
 
     enabled            = true
     namespace          = "eg"

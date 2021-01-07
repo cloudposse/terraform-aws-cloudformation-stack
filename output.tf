@@ -9,6 +9,6 @@ output "id" {
 }
 
 output "outputs" {
-  value       = var.enabled ? aws_cloudformation_stack.default[0].outputs : {}
+  value       = module.this.enabled ? aws_cloudformation_stack.default[0].outputs : {}
   description = "Outputs of the CloudFormation Stack"
 }
