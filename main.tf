@@ -1,4 +1,5 @@
 resource "aws_cloudformation_stack" "default" {
+  
   count = module.this.enabled ? 1 : 0
 
   name = module.this.id
