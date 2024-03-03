@@ -16,9 +16,9 @@ variable "capabilities" {
 }
 
 variable "iam_role_arn" {
-  type = string
+  type        = string
   description = "The ARN of an IAM role that AWS CloudFormation assumes to create the stack. If you don't specify a value, AWS CloudFormation uses the role that was previously associated with the stack. If no role is available, AWS CloudFormation uses a temporary session that is generated from your user credentials."
-  default = ""
+  default     = ""
 }
 
 variable "on_failure" {
