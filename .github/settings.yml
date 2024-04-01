@@ -1,0 +1,7 @@
+# Upstream changes from _extends are only recognized when modifications are made to this file in the default branch.
+_extends: .github
+repository:
+  name: terraform-aws-cloudformation-stack
+  description: Terraform module to provision CloudFormation Stack
+  homepage: https://cloudposse.com/accelerate
+  topics: terraform-modules, cfn, cloudformation, aws, terraform, hcl2, cloudformation-stacks
