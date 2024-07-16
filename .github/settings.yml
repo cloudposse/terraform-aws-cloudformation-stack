@@ -5,3 +5,4 @@ repository:
   description: Terraform module to provision CloudFormation Stack
   homepage: https://cloudposse.com/accelerate
   topics: terraform-modules, cfn, cloudformation, aws, terraform, hcl2, cloudformation-stacks
+
