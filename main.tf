@@ -11,5 +11,6 @@ resource "aws_cloudformation_stack" "default" {
   on_failure         = var.on_failure
   timeout_in_minutes = var.timeout_in_minutes
 
-  policy_body = var.policy_body
+  policy_body  = var.policy_body
+  iam_role_arn = var.iam_role_arn
 }
