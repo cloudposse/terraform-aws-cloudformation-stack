@@ -3,7 +3,7 @@
 <!-- markdownlint-disable -->
 <a href="https://cpco.io/homepage"><img src="https://github.com/cloudposse/terraform-aws-cloudformation-stack/blob/main/.github/banner.png?raw=true" alt="Project Banner"/></a><br/>
     <p align="right">
-<a href="https://github.com/cloudposse/terraform-aws-cloudformation-stack/releases/latest"><img src="https://img.shields.io/github/release/cloudposse/terraform-aws-cloudformation-stack.svg?style=for-the-badge" alt="Latest Release"/></a><a href="https://github.com/cloudposse/terraform-aws-cloudformation-stack/commits"><img src="https://img.shields.io/github/last-commit/cloudposse/terraform-aws-cloudformation-stack.svg?style=for-the-badge" alt="Last Updated"/></a><a href="https://slack.cloudposse.com"><img src="https://slack.cloudposse.com/for-the-badge.svg" alt="Slack Community"/></a></p>
+<a href="https://github.com/cloudposse/terraform-aws-cloudformation-stack/releases/latest"><img src="https://img.shields.io/github/release/cloudposse/terraform-aws-cloudformation-stack.svg?style=for-the-badge" alt="Latest Release"/></a><a href="https://github.com/cloudposse/terraform-aws-cloudformation-stack/commits"><img src="https://img.shields.io/github/last-commit/cloudposse/terraform-aws-cloudformation-stack.svg?style=for-the-badge" alt="Last Updated"/></a><a href="https://cloudposse.com/slack"><img src="https://slack.cloudposse.com/for-the-badge.svg" alt="Slack Community"/></a></p>
 <!-- markdownlint-restore -->
 
 <!--
@@ -154,6 +154,11 @@ module "cloudformation_stack" {
 | <a name="output_name"></a> [name](#output\_name) | Name of the CloudFormation Stack |
 | <a name="output_outputs"></a> [outputs](#output\_outputs) | Outputs of the CloudFormation Stack |
 <!-- markdownlint-restore -->
+
+
+
+
+
 
 
 ## Related Projects
