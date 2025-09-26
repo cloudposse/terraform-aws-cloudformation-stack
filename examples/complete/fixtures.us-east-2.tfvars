@@ -7,8 +7,7 @@ stage = "test"
 name = "cloudformation-stack"
 
 parameters = {
-  NotificationEmailAddressForCloudWatchAlarms = "notify-me@example.com"
-  ProfileLevel                                = "Level 2"
+  BucketName = "test-bucket-eg-test-cloudformation-stack"
 }
 
-capabilities = ["CAPABILITY_IAM"]
+capabilities = []
