@@ -6,8 +6,6 @@ stage = "test"
 
 name = "cloudformation-stack"
 
-parameters = {
-  BucketName = "test-bucket-eg-test-cloudformation-stack"
-}
+parameters = {}
 
 capabilities = []
