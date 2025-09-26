@@ -1,0 +1,2435 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: CIS AWS Foundations Benchmark - The CIS AWS Foundations Benchmark provides
+  a set of security configuration best practices for AWS. (qs-1nrf3c2if)
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Profile Level
+      Parameters:
+      - ProfileLevel
+    - Label:
+        default: CloudWatch Rules and Alarms Parameters
+      Parameters:
+      - NotificationEmailAddressForCloudWatchAlarms
+    - Label:
+        default: (Optional) Configure AWS Cloudtrail and AWS Config
+      Parameters:
+      - ConfigureCloudtrailAndConfig
+    ParameterLabels:
+      ProfileLevel:
+        default: Profile Level
+      NotificationEmailAddressForCloudWatchAlarms:
+        default: Notification Address
+Parameters:
+  ProfileLevel:
+    Description: 'Level 1 controls are baseline governance controls, whereas Level
+      2 controls represent redundant or stricter governance controls. See the control
+      list here for guidance: https://benchmarks.cisecurity.org/en-us/?route=downloads.form.awsfoundations.110'
+    Type: String
+    Default: Level 2
+    AllowedValues:
+    - Level 1
+    - Level 2
+  NotificationEmailAddressForCloudWatchAlarms:
+    Type: String
+    Description: Email address that will be subscribed to the SNS topic for CloudWatch
+      alarms and rules (a subscription confirmation email will be sent).
+    AllowedPattern: ([a-zA-Z0-9_\-\.]+)@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.)|(([a-zA-Z0-9\-]+\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\]?)
+    ConstraintDescription: Must be a valid email address!
+Conditions:
+  GovCloudCondition:
+    !Equals
+    - !Ref AWS::Region
+    - us-gov-west-1
+  IsLevel2:
+    !Equals
+    - Level 2
+    - !Ref ProfileLevel
+Resources:
+#===============================================================================================================================
+# Resources for EvaluateCisBenchmarkingPreconditions
+# Creates IAM role for AWS Config, grants KMS and S3 read only permissions
+#===============================================================================================================================
+  MasterConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - !Sub
+        - arn:${Partition}:iam::aws:policy/AmazonEC2ReadOnlyAccess
+        - Partition:
+            !If
+            - GovCloudCondition
+            - aws-us-gov
+            - aws
+      - !Sub
+        - arn:${Partition}:iam::aws:policy/AWSCloudTrailReadOnlyAccess
+        - Partition:
+            !If
+            - GovCloudCondition
+            - aws-us-gov
+            - aws
+      - !Sub
+        - arn:${Partition}:iam::aws:policy/IAMReadOnlyAccess
+        - Partition:
+            !If
+            - GovCloudCondition
+            - aws-us-gov
+            - aws
+      - !Sub
+        - arn:${Partition}:iam::aws:policy/service-role/AWSConfigRulesExecutionRole
+        - Partition:
+            !If
+            - GovCloudCondition
+            - aws-us-gov
+            - aws
+      - !Sub
+        - arn:${Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - Partition:
+            !If
+            - GovCloudCondition
+            - aws-us-gov
+            - aws
+      Policies:
+      - PolicyName: KmsReadOnly
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - kms:GetKeyRotationStatus
+            - kms:ListKeys
+            - kms:ListAliases
+            Resource: '*'
+      - PolicyName: S3ReadOnly
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetBucketAcl
+            - s3:GetBucketLogging
+            - s3:GetBucketPolicy
+            Resource: '*'
+
+#==================================================================================================
+# Function: EvaluateCisBenchmarkingPreconditions
+# Purpose:  Evaluates preconditions for CIS benchmarking
+#
+#           Precondition 1: Config must have an active recorder running.
+#                           This is needed for Config Rules.
+#           Precondition 2: CloudTrail must be delivering logs to CloudWatch Logs
+#                           This is needed for CloudWatch metrics and alarms.
+#==================================================================================================
+  FunctionForEvaluateCISBenchmarkPreconditions:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    Properties:
+      FunctionName: CIS-EvaluateCISBenchmarkPreconditions
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+          def lambda_handler(event, context):
+            response_status = cfnresponse.SUCCESS
+            response_data = ''
+            # Only execute in a custom CloudFormation resource creation event.
+            if 'RequestType' in event and event['RequestType'] == 'Create':
+              is_recording = False
+              # Determine whether there is at least one configuration recorder recording.
+              for recorder in boto3.client('config').describe_configuration_recorder_status()['ConfigurationRecordersStatus']:
+                is_recording = is_recording or recorder['recording']
+              if not is_recording:
+                response_status = cfnresponse.FAILED
+                response_data = response_data + 'There is no active Config Recorder.'
+              # Determine whether any of the trails are delivering logs to CloudWatch Logs (the trail and log must be in-region)
+              is_delivering_logs = False
+              for trail in boto3.client('cloudtrail').describe_trails(includeShadowTrails=False)['trailList']:
+                if 'CloudWatchLogsLogGroupArn' in trail:
+                  is_delivering_logs = True
+                  break
+              if not is_delivering_logs:
+                response_status = cfnresponse.FAILED
+                response_data = response_data + ' CloudTrail is not delivering logs to CloudWatch Logs.'
+            cfnresponse.send(event, context, response_status, {"Response":response_data}, '')
+      Description: Evaluates preconditions for CIS benchmarking
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 5
+  ResourceForEvaluateCISBenchmarkPreconditions:
+    Type: Custom::ResourceForEvaluateCISBenchmarkPreconditions
+    DependsOn: FunctionForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ServiceToken:
+        !GetAtt
+        - FunctionForEvaluateCISBenchmarkPreconditions
+        - Arn
+
+#===============================================================================================================================
+# Function to find and return CloudWatch log name Section
+# CloudWatch log name is needed (referenced) for custom metric filters
+# Lambda function will return the CloudWatch LogName used by CloudTrail
+# The function is executed only in a custom CloudFormation resource creation event
+#===============================================================================================================================
+  GetCloudWatchLogName:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-GetCloudTrailCloudWatchLog
+      Code:
+        ZipFile: |
+          #Function to find and return CloudWatch log name
+          import boto3
+          import cfnresponse
+          def lambda_handler(event, context):
+            cloudwatch_log = ''
+            response_data = {}
+            if event['RequestType'] == 'Create':
+              for trail in boto3.client('cloudtrail').describe_trails(includeShadowTrails=False)['trailList']:
+                if 'CloudWatchLogsLogGroupArn' in trail:
+                  cloudwatch_log = trail['CloudWatchLogsLogGroupArn'].split(':')[6]
+                  break
+            response_data['LogName'] = cloudwatch_log
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data, '')
+      Description: Function to find and return CloudWatch log name
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 5
+  ResourceForGetCloudWatchLogName:
+    Type: Custom::ResourceForGetCloudWatchLogName
+    DependsOn: GetCloudWatchLogName
+    Properties:
+      ServiceToken:
+        !GetAtt
+        - GetCloudWatchLogName
+        - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.2   Ensure multi-factor authentication (MFA) is enabled for all IAM users that have a password (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateMFAAllUsersLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateMFAAllUsers
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateMFAAllUsers:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateUserMfaUsage
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          APPLICABLE_RESOURCES = ['AWS::IAM::User']
+          def evaluate_compliance(configuration_item):
+            if configuration_item['resourceType'] not in APPLICABLE_RESOURCES:
+              return 'NOT_APPLICABLE'
+            if configuration_item['configurationItemStatus'] == "ResourceDeleted":
+              return 'NOT_APPLICABLE'
+            user_name = configuration_item['configuration']['userName']
+            client = boto3.client('iam')
+            mfa = client.list_mfa_devices(UserName=user_name)
+            # Only check MFA for User with passwords.
+            try:
+              profile = client.get_login_profile(UserName=user_name)
+            except:
+              return 'NOT_APPLICABLE'
+            if len(mfa['MFADevices']) > 0:
+              return 'COMPLIANT'
+            else:
+              return 'NON_COMPLIANT'
+          def lambda_handler(event, context):
+            invoking_event = json.loads(event['invokingEvent'])
+            configuration_item = invoking_event['configurationItem']
+            result_token = 'No token found.'
+            if 'resultToken' in event:
+              result_token = event['resultToken']
+            config = boto3.client('config')
+            config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType':configuration_item['resourceType'],
+                  'ComplianceResourceId':configuration_item['resourceId'],
+                  'ComplianceType': evaluate_compliance(configuration_item),
+                  'OrderingTimestamp': configuration_item['configurationItemCaptureTime']
+                },
+              ],
+              ResultToken=result_token
+            )
+      Description: Evaluates whether MFA is enabled for all IAM users that have a
+        password
+      Handler: index.lambda_handler
+      Runtime: python2.7
+      Timeout: '300'
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+  ConfigRuleForEvaluateMFAAllUsers:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: CIS-UsersMustHaveMfaEnabled
+      Description: CIS 1.2 - Ensure multi-factor authentication (MFA) is enabled for
+        all IAM users that have a password (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::User
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateMFAAllUsers
+          - Arn
+    DependsOn:
+    - EvaluateMFAAllUsersLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.3   Ensure credentials unused for 90 days or greater are disabled (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateUnusedCredentialsLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionForEvaluateUnusedCredentials
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateUnusedCredentials
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateUnusedCredentials:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-RotateUserPasswords
+      Description: Evaluates whether users with password enabled have credentials
+        unused for 90 days or greater
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import datetime
+          from datetime import date
+          APPLICABLE_RESOURCES = ['AWS::IAM::User']
+          DEFAULT_AGE_THRESHOLD_IN_DAYS = 90
+          annotation = ' '
+          def evaluate_compliance(configuration_item):
+            if configuration_item['resourceType'] not in APPLICABLE_RESOURCES:
+              return 'NOT_APPLICABLE'
+            if configuration_item['configurationItemStatus'] == "ResourceDeleted":
+              return 'NOT_APPLICABLE'
+            config = boto3.client('config')
+            age_in_days = 0
+            global annotation
+            resource_information = config.get_resource_config_history(
+                resourceType=configuration_item['resourceType'],
+                resourceId=configuration_item['resourceId']
+                )
+            user_name = resource_information['configurationItems'][0]['resourceName']
+            now = date(datetime.date.today().year, datetime.date.today().month, datetime.date.today().day)
+            iam = boto3.client('iam')
+            user = iam.get_user(UserName=user_name)
+            annotation = ' '
+            # User has a Password but never used
+            if user['User'].get('PasswordLastUsed') is None:
+              try:
+                login_profile = iam.get_login_profile(UserName=user_name)
+              except:
+                return 'NOT_APPLICABLE'
+              password_create_date = login_profile['LoginProfile'].get('CreateDate')
+              date_last_used=date(password_create_date.year, password_create_date.month, password_create_date.day)
+              age_in_days = (now - date_last_used).days
+              annotation = annotation + 'Login Profile was created {0} days ago; password was never used.'.format(age_in_days)
+            else:
+              try:
+                password_last_used=user['User'].get('PasswordLastUsed')
+                date_last_used=date(password_last_used.year, password_last_used.month, password_last_used.day)
+                #user should also have a login profile for console access
+                login_profile = iam.get_login_profile(UserName=user_name)
+                password_create_date = login_profile['LoginProfile'].get('CreateDate')
+                date_last_used_from_profile=date(password_create_date.year, password_create_date.month, password_create_date.day)
+                if date_last_used_from_profile > date_last_used:
+                  #password from the login profile is most recent - means that console access has been disable and re-enabled 
+                  age_in_days=(now - date_last_used_from_profile).days
+                  annotation = annotation + 'Login Profile was created {0} days ago; the new password was never used.'.format(age_in_days)
+                else:
+                  age_in_days = (now - date_last_used).days
+                  annotation = annotation + 'Password was last used {0} days ago.'.format(age_in_days)
+              except:
+                return 'NOT_APPLICABLE'
+            if age_in_days > DEFAULT_AGE_THRESHOLD_IN_DAYS:
+              return 'NON_COMPLIANT'
+            else: return 'COMPLIANT'
+          def lambda_handler(event, context):
+            invoking_event = json.loads(event['invokingEvent'])
+            configuration_item = invoking_event['configurationItem']
+            result_token = 'No token found.'
+            global annotation
+            if 'resultToken' in event:
+              result_token = event['resultToken']
+            config = boto3.client('config')
+            config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType' : configuration_item['resourceType'],
+                  'ComplianceResourceId' : configuration_item['resourceId'],
+                  'ComplianceType' : evaluate_compliance(configuration_item),
+                  'Annotation': annotation,
+                  'OrderingTimestamp' : configuration_item['configurationItemCaptureTime']
+                },
+              ],
+              ResultToken=result_token
+            )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateUnusedCredentials:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - FunctionForEvaluateUnusedCredentials
+    - EvaluateUnusedCredentialsLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-RotateUserPasswords
+      Description: CIS 1.3 - Ensure credentials unused for 90 days or greater are
+        disabled (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::User
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateUnusedCredentials
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.4   Ensure access keys are rotated every 90 days or less (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateAccessKeysLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionForEvaluateAccessKeys
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateAccessKeys
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateAccessKeys:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-RotateAccessKeys
+      Description: Evaluates whether users have unused active access keys for 90 days
+        or greater
+      Code:
+        ZipFile: |
+            import boto3
+            import json
+            import datetime
+            from datetime import date
+            APPLICABLE_RESOURCES = ['AWS::IAM::User']
+            DEFAULT_AGE_THRESHOLD_IN_DAYS = 90
+            annotation = ' '
+            ### COMPLIANCE EVALUATION
+            def evaluate_compliance(configuration_item):
+                global annotation
+                if configuration_item['resourceType'] not in APPLICABLE_RESOURCES:
+                    return 'NOT_APPLICABLE'
+                if configuration_item['configurationItemStatus'] == "ResourceDeleted":
+                    return 'NOT_APPLICABLE'
+                config = boto3.client('config')
+                resource_information = config.get_resource_config_history(
+                    resourceType=configuration_item['resourceType'],
+                    resourceId=configuration_item['resourceId']
+                    )
+                user_name = resource_information['configurationItems'][0]['resourceName']
+                now = date(datetime.date.today().year, datetime.date.today().month, datetime.date.today().day)
+                iam = boto3.client('iam')
+                user = iam.get_user(UserName=user_name)
+                compliance = 'NOT_APPLICABLE'
+                annotation = ' '
+                for access_key in iam.list_access_keys(UserName = user_name)['AccessKeyMetadata']:
+                # evaluate active access keys
+                    if access_key['Status'] == 'Active':
+                        id = access_key['AccessKeyId']
+                        access_key_create_date = access_key['CreateDate']
+                        access_key_create_date  = date(access_key_create_date.year, access_key_create_date.month, access_key_create_date.day)
+                        age_in_days = 0
+                        age_in_days = (now - access_key_create_date).days
+                        if age_in_days > DEFAULT_AGE_THRESHOLD_IN_DAYS:
+                            compliance = 'NON_COMPLIANT'
+                            annotation = annotation + '\n Access Key with ID: ' + id + ' is NON_COMPLIANT - age in days: {0}'.format(age_in_days)
+                        else:
+                            annotation = annotation + '\n Access Key with ID: ' + id + ' is COMPLIANT - age in days: {0}'.format(age_in_days)
+                            compliance = 'COMPLIANT'
+                return compliance
+            ### LAMBDA HANDLER
+            def lambda_handler(event, contxt):
+                global annotation
+                invoking_event = json.loads(event['invokingEvent'])
+                configuration_item = invoking_event['configurationItem']
+                result_token = 'No token found.'
+                if 'resultToken' in event:
+                    result_token = event['resultToken']
+                config = boto3.client('config')
+                config.put_evaluations(
+                    Evaluations=[
+                        {
+                        'ComplianceResourceType' : configuration_item['resourceType'],
+                        'ComplianceResourceId' : configuration_item['resourceId'],
+                        'ComplianceType' : evaluate_compliance(configuration_item),
+                        'Annotation': annotation,
+                        'OrderingTimestamp' : configuration_item['configurationItemCaptureTime']
+                        },
+                    ],
+                    ResultToken=result_token
+                )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateAccessKeys:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - FunctionForEvaluateAccessKeys
+    - EvaluateAccessKeysLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-RotateAccessKeys
+      Description: CIS 1.4 - Ensure access keys are rotated every 90 days or less
+        (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::User
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateAccessKeys
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.5   Ensure IAM password policy requires at least one uppercase letter (Scored)
+# CIS AWS Foundations Benchmark - 1.6   Ensure IAM password policy require at least one lowercase letter (Scored)
+# CIS AWS Foundations Benchmark - 1.7   Ensure IAM password policy require at least one symbol (Scored)
+# CIS AWS Foundations Benchmark - 1.8   Ensure IAM password policy require at least one number (Scored)
+# CIS AWS Foundations Benchmark - 1.9   Ensure IAM password policy requires minimum length of 14 or greater (Scored)
+# CIS AWS Foundations Benchmark - 1.10  Ensure IAM password policy prevents password reuse (Scored)
+# CIS AWS Foundations Benchmark - 1.11  Ensure IAM password policy expires passwords within 90 days or less (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  ConfigRuleForIamPasswordPolicy:
+    Type: AWS::Config::ConfigRule
+    DependsOn: ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-IamPasswordPolicyMustMeetRequirements
+      Description: Evaluates whether the account password policy for IAM users meets
+        the specified CIS requirements 1.5 through 1.11
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::User
+      InputParameters:
+        RequireUppercaseCharacters: true
+        RequireLowercaseCharacters: true
+        RequireSymbols: true
+        RequireNumbers: true
+        MinimumPasswordLength: 14
+        PasswordReusePrevention: 24
+        MaxPasswordAge: 90
+      Source:
+        Owner: AWS
+        SourceIdentifier: IAM_PASSWORD_POLICY
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.12  Ensure no root account access key exists (Scored)
+# CIS AWS Foundations Benchmark - 1.13  Ensure  MFA is enabled for the "root" account (Scored)
+# CIS AWS Foundations Benchmark - 1.14  Ensure hardware MFA is enabled for the "root" account (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateRootAccountLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateRootAccountRule
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateRootAccountRule:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateRootAccount
+      Code:
+        ZipFile: |
+          #==================================================================================================
+          # Function: EvaluateRootAccountSecurityProperties
+          # Purpose:  Evaluates the root account for security properties
+          #==================================================================================================
+          import json
+          import boto3
+          import datetime
+          FIELD_ACCESS_KEY_1_ACTIVE = 8
+          FIELD_ACCESS_KEY_2_ACTIVE = 13
+          def lambda_handler(event, context):
+            is_compliant = True
+            annotation = '-'
+            invoking_event = json.loads(event['invokingEvent'])
+            result_token = 'No token found.'
+            if 'resultToken' in event: result_token = event['resultToken']
+            client = boto3.client('iam')
+            # Determine whether the root account has MFA enabled.
+            summary = client.get_account_summary()['SummaryMap']
+            if 'AccountMFAEnabled' in summary and summary['AccountMFAEnabled'] == 1:
+              is_compliant = is_compliant and True
+            else:
+              is_compliant = is_compliant and False
+              annotation = annotation + ' The root account does NOT have MFA enabled.'
+            # Determine whether the root account uses hardware-based MFA.
+            mfa_devices = client.list_virtual_mfa_devices()['VirtualMFADevices']
+            for mfa_device in mfa_devices:
+              if 'SerialNumber' in mfa_device and 'mfa/root-account-mfa-device' in mfa_device['SerialNumber']:
+                is_compliant = is_compliant and False
+                annotation = annotation + ' The root account does NOT have hardware-based MFA enabled.'
+                break
+              else:
+                is_compliant = is_compliant and True
+            # Determine whether the root account has active access keys.
+            # The credential report will contain comma-separated values, so transform the users into a list.
+            response = client.generate_credential_report()
+            content = client.get_credential_report()['Content']
+            users = content.splitlines()
+            # Look for the ''<root_account>'' user value and determine whether acccess keys are active.
+            for user in users:
+              if '<root_account>' in user:
+                user_values = user.split(',')
+                if user_values[FIELD_ACCESS_KEY_1_ACTIVE].lower() == 'false' and user_values[FIELD_ACCESS_KEY_2_ACTIVE].lower() == 'false':
+                  is_compliant = is_compliant and True
+                else:
+                  is_compliant = is_compliant and False
+                  annotation = annotation + ' The root account HAS active access keys associated with it.'
+                break
+            config = boto3.client('config')
+            config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType': 'AWS::::Account',
+                  'ComplianceResourceId': 'Root',
+                  'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                  'Annotation': annotation,
+                  'OrderingTimestamp': datetime.datetime.now(),
+                },
+              ],
+              ResultToken=result_token
+            )
+      Description: Evaluates the security properties of the root account - CIS 1.12,
+        1.13, 1.14
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateRootAccount:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - EvaluateRootAccountLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-RootAccountMustHaveMfaEnabled
+      Description: CIS 1.12 - Ensure no root account access key exists (Scored),
+        CIS 1.13 - Ensure  MFA is enabled for the 'root' account (Scored), CIS 1.14
+        - Ensure hardware MFA is enabled for the 'root' account (Scored)
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ScheduledNotification
+          MaximumExecutionFrequency: One_Hour
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateRootAccountRule
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.16  Ensure IAM policies are attached only to groups or roles (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateUserPolicyAssociationLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionForEvaluateUserPolicyAssociationRule
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateUserPolicyAssociationRule
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateUserPolicyAssociationRule:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateUserPolicyAssociations
+      Description: Evaluates whether users have policies associated with them. Users
+        should inherit permissions from groups instead.
+      Code:
+        ZipFile: |
+          #==================================================================================================
+          # Function: EvaluateUserPolicyAssociations
+          # Purpose:  Evaluates whether users have policies associated with them. Users should inherit permissions from groups instead.
+          #==================================================================================================
+          import json
+          import boto3
+          APPLICABLE_RESOURCES = ['AWS::IAM::User']
+          annotation = ' '
+          def evaluate_compliance(configuration_item):
+            global annotation
+            annotation = ' '
+            if configuration_item['resourceType'] not in APPLICABLE_RESOURCES:
+              return 'NOT_APPLICABLE'
+            if configuration_item['configurationItemStatus'] == "ResourceDeleted":
+              return 'NOT_APPLICABLE'
+            user_name = configuration_item['resourceName']
+            iam = boto3.client('iam')
+            # lists all user inline attached policies
+            if iam.list_user_policies(UserName=user_name)['PolicyNames']:
+              annotation = 'The user has inline policies attached! '
+              return 'NON_COMPLIANT'
+            # lists all user managed attached policies
+            elif iam.list_attached_user_policies(UserName=user_name)['AttachedPolicies']:
+              annotation = 'The user has managed policies attached! '
+              return 'NON_COMPLIANT'
+            else:
+              annotation= 'The user does not have inline or managed policies attached! '
+              return 'COMPLIANT'
+          def lambda_handler(event, context):
+            invoking_event = json.loads(event['invokingEvent'])
+            configuration_item = invoking_event['configurationItem']
+            result_token = 'No token found.'
+            if 'resultToken' in event: result_token = event['resultToken']
+            config = boto3.client('config')
+            config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType': configuration_item['resourceType'],
+                  'ComplianceResourceId': configuration_item['resourceId'],
+                  'ComplianceType': evaluate_compliance(configuration_item),
+                  'Annotation': annotation,
+                  'OrderingTimestamp': configuration_item['configurationItemCaptureTime']
+                },
+              ],
+              ResultToken=result_token
+            )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateUserPolicyAssociations:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - FunctionForEvaluateUserPolicyAssociationRule
+    - EvaluateUserPolicyAssociationLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-UsersMustNotHaveAssociatedPolicies
+      Description: CIS 1.16 - Ensure IAM policies are attached only to groups or roles
+        (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::User
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateUserPolicyAssociationRule
+          - Arn
+
+#===================================================================================================
+# CIS 1.19  Ensure IAM instance roles are used for AWS resource access from instances
+#===================================================================================================
+  FunctionForInstanceRoleUseRule:
+    Type: AWS::Lambda::Function
+    Condition: IsLevel2
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateInstanceRoleUse
+      Code:
+        ZipFile: |
+          #==================================================================================================
+          # Function: EvaluateInstanceRoleUse
+          # Purpose:  Evaluates whether instances use instance roles
+          #==================================================================================================
+          import boto3
+          import json
+          def evaluate_compliance(config_item, instance_id):
+            if (config_item['resourceType'] != 'AWS::EC2::Instance'): return 'NOT_APPLICABLE'
+            if (config_item['configurationItemStatus'] == "ResourceDeleted"): return 'NOT_APPLICABLE'
+            reservations = boto3.client('ec2').describe_instances(InstanceIds=[instance_id])['Reservations']
+            if (reservations[0]['Instances'][0]['State']['Name']).upper() == 'TERMINATED':
+              return 'NOT_APPLICABLE'
+            if reservations and 'IamInstanceProfile' in reservations[0]['Instances'][0]: return 'COMPLIANT'
+            else: return 'NON_COMPLIANT'
+          def lambda_handler(event, context):
+            invoking_event = json.loads(event['invokingEvent'])
+            compliance_value = 'NOT_APPLICABLE'
+            instance_id = invoking_event['configurationItem']['resourceId']
+            compliance_value = evaluate_compliance(invoking_event['configurationItem'], instance_id)
+            config = boto3.client('config')
+            response = config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
+                  'ComplianceResourceId': instance_id,
+                  'ComplianceType': compliance_value,
+                  'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
+                },
+              ],
+              ResultToken=event['resultToken']
+            )
+      Description: Evaluates whether instances use instance roles
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role: !GetAtt MasterConfigRole.Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigPermissionToCallInstanceRoleUseLambda:
+    Type: AWS::Lambda::Permission
+    Condition: IsLevel2
+    DependsOn: FunctionForInstanceRoleUseRule
+    Properties:
+      FunctionName: !GetAtt FunctionForInstanceRoleUseRule.Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  ConfigRuleForInstanceRoleUses:
+    Type: AWS::Config::ConfigRule
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForInstanceRoleUseRule
+    - ConfigPermissionToCallInstanceRoleUseLambda
+    Properties:
+      ConfigRuleName: CIS-InstancesMustUseIamRoles
+      Description: CIS 1.19  Ensure IAM instance roles are used for AWS resource access
+        from instances
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::Instance
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier: !GetAtt FunctionForInstanceRoleUseRule.Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.20  Ensure a support role has been created to manage incidents with AWS Support (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateAwsSupportAccessPolicyLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionForEvaluateAwsSupportAccessPolicy
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateAwsSupportAccessPolicy
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateAwsSupportAccessPolicy:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateSupportRoleExists
+      Description: Evaluates whether users / groups / roles have the 'AWSSupportAccess'
+        policy associated.
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          def evaluate_compliance(resource_type):
+            return_value = 'COMPLIANT'
+            client = boto3.client('iam')
+            partition = 'aws'
+            if (os.environ['AWS_REGION'].find("-gov-") > 0):
+              partition = 'aws-us-gov'
+            policy_arn = 'arn:' + partition + ':iam::aws:policy/AWSSupportAccess'
+            print 'policyarn = ', policy_arn
+            # If GovCloud, dont evaluate as the Managed Policy 'AWSSupportAccess' doesn't exist
+            if (policy_arn.find("-gov") > 0):
+              return 'NOT_APPLICABLE'
+            # search for all entities that have a specific policy associated: AWSSupportAccess
+            response = client.list_entities_for_policy(PolicyArn=policy_arn)
+            if (resource_type) == 'user' and len(response['PolicyUsers']) == 0:
+              return_value = 'NOT_APPLICABLE'
+            elif (resource_type) == 'group' and len(response['PolicyGroups']) == 0:
+              return_value = 'NOT_APPLICABLE'
+            elif (resource_type) == 'role' and len(response['PolicyRoles']) == 0:
+              return_value = 'NOT_APPLICABLE'
+            else:
+              return_value = 'COMPLIANT'
+            return return_value
+          def lambda_handler(event, context):
+            invoking_event = json.loads(event['invokingEvent'])
+            config = boto3.client('config')
+            userAnnotation = 'Atleast one IAM User has the AWSSupportAccess IAM policy assigned'
+            grpAnnotation = 'Atleast one IAM Group has the AWSSupportAccess IAM policy assigned'
+            roleAnnotation = 'Atleast one IAM Role has the AWSSupportAccess IAM policy assigned'
+            userCompliance = evaluate_compliance('user')
+            groupCompliance = evaluate_compliance('group')
+            roleCompliance = evaluate_compliance('role')
+            response = config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType': 'AWS::IAM::User',
+                  'ComplianceResourceId': 'NA',
+                  'ComplianceType': userCompliance,
+                  'Annotation': userAnnotation,
+                  'OrderingTimestamp': invoking_event['notificationCreationTime']
+                },
+                {
+                  'ComplianceResourceType': 'AWS::IAM::Group',
+                  'ComplianceResourceId': 'NA',
+                  'ComplianceType': groupCompliance,
+                  'Annotation': grpAnnotation,
+                  'OrderingTimestamp': invoking_event['notificationCreationTime']
+                },
+                {
+                  'ComplianceResourceType': 'AWS::IAM::Role',
+                  'ComplianceResourceId': 'NA',
+                  'ComplianceType': roleCompliance,
+                  'Annotation': roleAnnotation,
+                  'OrderingTimestamp': invoking_event['notificationCreationTime']
+                }
+              ],
+              ResultToken=event['resultToken']
+            )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateAwsSupportAccessPolicy:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - FunctionForEvaluateAwsSupportAccessPolicy
+    - EvaluateAwsSupportAccessPolicyLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-AwsSupportRoleExists
+      Description: CIS 1.20 - Ensure a support role has been created to manage incidents
+        with AWS Support (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::User
+        - AWS::IAM::Group
+        - AWS::IAM::Role
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateAwsSupportAccessPolicy
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.22  Ensure IAM policies that allow full "*:*" administrative privileges are not created (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateFullAdminPrivilegesPoliciesLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionForEvaluateFullAdminPrivilegesPolicies
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateFullAdminPrivilegesPolicies
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateFullAdminPrivilegesPolicies:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateFullAdminPolicyPermissions
+      Description: Evaluates whether policies allowing full admin privileges '*:*'
+        have been created
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import jmespath
+          def evaluate_compliance(config_item, policy_arn):
+            return_value = 'COMPLIANT'
+            client = boto3.client('iam')
+            # Get the policy details.
+            policy = client.get_policy(PolicyArn = policy_arn)['Policy']
+            # Get the latest policy version.
+            policy_version = client.get_policy_version(
+              PolicyArn = policy['Arn'],
+              VersionId = policy['DefaultVersionId']
+            )
+            # search for full admin privileges within the policy statements
+            if jmespath.search('PolicyVersion.Document.Statement[?Effect == \'Allow\' && contains(Resource, \'*\') && contains (Action, \'*\')]', policy_version):
+              return_value = 'NON_COMPLIANT'
+            return return_value
+          def lambda_handler(event, context):
+            invoking_event = json.loads(event['invokingEvent'])
+            compliance_value = 'COMPLIANT'
+            if (invoking_event['configurationItem']['configurationItemStatus'] == "ResourceDeleted") or (invoking_event['configurationItem']['resourceType'] != 'AWS::IAM::Policy'):
+              compliance_value = 'NOT_APPLICABLE'
+            else:
+              policy_arn = invoking_event['configurationItem']['ARN']
+              compliance_value = evaluate_compliance(invoking_event['configurationItem'], policy_arn)
+            config = boto3.client('config')
+            response = config.put_evaluations(
+              Evaluations=[
+                {
+                  'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
+                  'ComplianceResourceId': invoking_event['configurationItem']['resourceId'],
+                  'ComplianceType': compliance_value,
+                  'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
+                },
+              ],
+              ResultToken=event['resultToken']
+            )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateFullAdminPrivilegesPolicies:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - FunctionForEvaluateFullAdminPrivilegesPolicies
+    - EvaluateFullAdminPrivilegesPoliciesLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-EvaluateFullAdminPrivilegesPolicies
+      Description: CIS 1.22 - Ensure IAM policies that allow full '*:*' administrative
+        privileges are not created (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::IAM::Policy
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateFullAdminPrivilegesPolicies
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 2.1   Ensure CloudTrail is enabled in all regions (Scored)
+# CIS AWS Foundations Benchmark - 2.4   Ensure CloudTrail trails are integrated with CloudWatch Logs (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateCloudTrailEnabledIntegratedLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateCloudTrailEnabledIntegrated
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateCloudTrailEnabledIntegrated:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateCloudTrail
+      Code:
+        ZipFile: |
+          #==================================================================================================
+          # Function: EvaluateCloudTrailEnabledIntegrated
+          # Purpose:  Evaluates CloudTrail for CIS 2.1, 2.4
+          #==================================================================================================
+          import json
+          import boto3
+          import datetime
+          import time
+          client = boto3.client('cloudtrail')
+          def lambda_handler(event, context):
+            is_compliant = True
+            annotation = ''
+            is_multi_region = True
+            is_publicly_accessible = False
+            current_region_trail = {}
+            # List all trails, including 'shadow' trails, which are trails in
+            # other regions that could be capturing multi-regional events
+            for trail in client.describe_trails()['trailList']:
+              if trail['HomeRegion'] == context.invoked_function_arn.split(':')[3]:
+                current_region_trail = trail
+                annotation = ''
+                is_compliant= True
+                is_multi_region = current_region_trail['IsMultiRegionTrail']
+                # Enabled in all regions?
+                if not is_multi_region:
+                  is_compliant = False
+                  annotation = annotation + ' CloudTrail is not enabled in all regions.'
+                # Integration with CloudWatch Logs?
+                if 'CloudWatchLogsLogGroupArn' in current_region_trail and not current_region_trail['CloudWatchLogsLogGroupArn']:
+                  is_compliant = False
+                  annotation = annotation + ' CloudTrail is not integrated with Cloudwatch Logs.'
+                # Check if Trail logging has been turned off
+                trail_details = client.get_trail_status(Name = current_region_trail['Name'])
+                if not trail_details['IsLogging']:
+                  is_compliant = False
+                  annotation = annotation + 'CloudTrail trail is not logging any AWS API calls.'
+                # CloudWatch Logs delivered within the last day
+                if 'LatestCloudWatchLogsDeliveryTime' in trail_details:
+                  # Determine whether the number of minutes since the last delivery time exceeds 24 hours.
+                  if ((int(time.time()) - int(trail_details['LatestCloudWatchLogsDeliveryTime'].strftime("%s"))) / 1440) > 24:
+                    is_compliant = False
+                    annotation = annotation + ' The latest CloudTrail log delivery exceeds 24 hours.'
+                else:
+                  is_compliant = False
+                  annotation = annotation + ' There is no record of CloudTrail log delivery.'
+                # Set up evaluations
+                result_token = 'No token found.'
+                if 'resultToken' in event: result_token = event['resultToken']
+                evaluations = [
+                  {
+                    'ComplianceResourceType': 'AWS::CloudTrail::Trail',
+                    'ComplianceResourceId': current_region_trail['Name'],
+                    'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                    'OrderingTimestamp': datetime.datetime.now()
+                  }
+                ]
+                # Is compliant message
+                if is_compliant: annotation = 'CloudTrail is enabled in all regions and trails are integrated with CloudWatch Logs!'
+                if annotation: evaluations[0]['Annotation'] = annotation
+                config = boto3.client('config')
+                #deliver evaluations
+                config.put_evaluations(
+                  Evaluations = evaluations,
+                  ResultToken = result_token
+                )
+      Description: Evaluates whether CloudTrail has appropriate security properties.
+        Meets CIS 2.1, 2.4
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateCloudTrailEnabledIntegrated:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - EvaluateCloudTrailEnabledIntegratedLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-CloudTrailMustBeActive
+      Description: CIS 2.1, 2.4 - Ensure CloudTrail is enabled in all regions (Scored),
+        ensure CloudTrail trails are integrated with CloudWatch Logs (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::CloudTrail::Trail
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateCloudTrailEnabledIntegrated
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 2.3   Ensure the S3 bucket CloudTrail logs to is not publicly accessible (Scored)
+# CIS AWS Foundations Benchmark - 2.6   Ensure S3 Bucket Access Logging is enabled on the CloudTrail S3 bucket (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateCloudTrailS3AccessLoggingLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionForEvaluateCloudTrailS3AccessLogging
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateCloudTrailS3AccessLogging
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateCloudTrailS3AccessLogging:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateCloudTrailBucket
+      Description: Evaluates whether access logging is enabled on the CloudTrail S3
+        bucket and the S3 bucket is not publicly accessible for CIS 2.3, 2.6
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import datetime
+          import time
+          from botocore.exceptions import ClientError
+          def lambda_handler(event, context):
+            # get the trail for the current region
+            client_ct = boto3.client('cloudtrail')
+            for trail in client_ct.describe_trails(includeShadowTrails = False)['trailList']:
+              annotation = ''
+              is_publicly_accessible = False
+              s3_bucket_name = ''
+              is_compliant = True
+              # check if the cloudtrail s3 bucket is publicly accessible and logged
+              if trail['S3BucketName']:
+                s3_bucket_name = trail['S3BucketName']
+                client_s=boto3.client('s3')
+                annotation = 'CloudTrail S3 bucket \'{}\': '.format(s3_bucket_name)
+                try:
+                  for grant in client_s.get_bucket_acl(Bucket = s3_bucket_name)['Grants']:
+                    # verify cloudtrail s3 bucket ACL
+                    if grant['Permission'] in ['READ','FULL_CONTROL','WRITE_ACP','READ_ACP','WRITE'] and ('URI' in grant['Grantee'] and ('AuthenticatedUsers' in grant['Grantee']['URI'] or 'AllUsers' in grant['Grantee']['URI'])):
+                      is_publicly_accessible = True
+                  if is_publicly_accessible:
+                    is_compliant = False
+                    annotation = annotation + ' is publicly accessible by using bucket ACLs;'
+                  # verify cloudtrail s3 bucket logging
+                  response = client_s.get_bucket_logging(Bucket = s3_bucket_name)
+                  if 'LoggingEnabled' not in response:
+                    is_compliant=False
+                    annotation = annotation + ' does not have logging enabled;'
+                # verify cloudtrail s3 bucket policy
+                  is_compliant_policy = True
+                  bucket_policy = client_s.get_bucket_policy(Bucket=s3_bucket_name)['Policy']
+                  bucket_policy_statements = json.loads(bucket_policy)['Statement']
+                  for statement in bucket_policy_statements:
+                    if statement['Effect'] in ['Allow'] and statement['Principal'] in ['*']:
+                      is_compliant_policy = False
+                    elif statement['Effect'] in ['Allow'] and 'AWS' in statement['Principal'] and statement['Principal']['AWS'] in ['*']:
+                      is_compliant_policy = False
+                  if not is_compliant_policy:
+                    annotation = annotation + ' is publicly accessible by using bucket policies;'
+                    is_compliant = False
+                except Exception as ex:
+                  if '(NoSuchBucketPolicy)' in str(ex):
+                    annotation = annotation + ' does not have a bucket policy;'
+                  else:
+                    is_compliant = False
+                    annotation = annotation + ' There was an error looking up CloudTrail S3 bucket;'
+              else:
+                annotation = annotation + ' CloudTrail is not integrated with S3;'
+              result_token = 'No token found.'
+              if 'resultToken' in event: result_token = event['resultToken']
+              evaluations = [
+                {
+                  'ComplianceResourceType': 'AWS::S3::Bucket',
+                  'ComplianceResourceId': s3_bucket_name,
+                  'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                  'OrderingTimestamp': datetime.datetime.now()
+                }
+              ]
+              if is_compliant: annotation = 'Acces logging is enabled on the CloudTrail S3 bucket \'{}\' and the S3 bucket is not publicly accessible'.format(s3_bucket_name)
+              if annotation: evaluations[0]['Annotation'] = annotation
+              config = boto3.client('config')
+              config.put_evaluations(
+                Evaluations = evaluations,
+                ResultToken = result_token
+              )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateCloudTrailS3AccessLogging:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - FunctionForEvaluateCloudTrailS3AccessLogging
+    - EvaluateCloudTrailS3AccessLoggingLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-CloudTrailBucketMustBeSecure
+      Description: ConfigRule to evaluate whether access logging is enabled on the
+        CloudTrail S3 bucket and the S3 bucket is not publicly accessible for CIS
+        2.3, 2.6
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::CloudTrail::Trail
+        - AWS::S3::Bucket
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateCloudTrailS3AccessLogging
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 2.2   Ensure CloudTrail log file validation is enabled (Scored)
+# CIS AWS Foundations Benchmark - 2.7   Ensure CloudTrail logs are encrypted at rest using KMS CMKs (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateCloudTrailLogsEncryptionValidationLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateCloudTrailLogsEncryptionValidation
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateCloudTrailLogsEncryptionValidation
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateCloudTrailLogsEncryptionValidation:
+    Type: AWS::Lambda::Function
+    Condition: IsLevel2
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateCloudTrailLogIntegrity
+      Description: Evaluates whether CloudTrail logs are validated and encrypted at
+        rest
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import datetime
+          import time
+          client_ct = boto3.client('cloudtrail')
+          config = boto3.client('config')
+          def lambda_handler(event, context):
+            for trail in client_ct.describe_trails()['trailList']:
+              is_compliant = True
+              if trail['HomeRegion'] == context.invoked_function_arn.split(':')[3]:
+                current_region_trail = trail
+                annotation = ''
+                # evaluate log file validation
+                if not current_region_trail['LogFileValidationEnabled']:
+                  is_compliant = False
+                  annotation = annotation + ' CloudTrail log file validation is not enabled.'
+                # evaluate log file encryption
+                if not 'KmsKeyId' in current_region_trail:
+                  is_compliant = False
+                  annotation = annotation + ' CloudTrail log files are not encrypted in S3.'
+                result_token = 'No token found.'
+                if 'resultToken' in event: result_token = event['resultToken']
+                evaluations = [
+                  {
+                    'ComplianceResourceType': 'AWS::CloudTrail::Trail',
+                    'ComplianceResourceId': current_region_trail['Name'],
+                    'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                    'OrderingTimestamp': datetime.datetime.now()
+                  }
+                ]
+                if is_compliant: annotation = 'CloudTrail log files are encrypted and validated in S3.'
+                if annotation: evaluations[0]['Annotation'] = annotation
+                config.put_evaluations(
+                  Evaluations = evaluations,
+                  ResultToken = result_token
+                )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateCloudTrailLogsEncryptionValidation:
+    Type: AWS::Config::ConfigRule
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateCloudTrailLogsEncryptionValidation
+    - EvaluateCloudTrailLogsEncryptionValidationLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-CloudTrailLogsMustBeValidatedAndEncrypted
+      Description: CIS 2.2, 2.7 - Ensure CloudTrail log file validation is enabled
+        (Scored), ensure CloudTrail logs are encrypted at rest using KMS CMKs (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::CloudTrail::Trail
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateCloudTrailLogsEncryptionValidation
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 2.8   Ensure rotation for customer created CMKs is enabled (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateCMKsRotationLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateCMKsRotation
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateCMKsRotation
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateCMKsRotation:
+    Type: AWS::Lambda::Function
+    Condition: IsLevel2
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateKmsCustomerKeyRotation
+      Description: Evaluates whether existing customer managed keys (CMKs) have key
+        rotation enabled
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import datetime
+          def getKeyAlias(keyAliases, keyId):
+            for key in keyAliases:
+              if 'TargetKeyId' in key and key['AliasName'].startswith('alias/aws'):
+                continue
+              if 'TargetKeyId' in key:
+                if key['TargetKeyId'] == keyId:
+                  return key['AliasName']
+            return ''
+          def lambda_handler(event, context):
+            is_compliant = True
+            result_token = 'No token found.'
+            annotation = ''
+            compliance_resource_type = 'N/A'
+            if 'resultToken' in event: result_token = event['resultToken']
+            evaluations = []
+            kms_client = boto3.client('kms')
+            config_client = boto3.client('config')
+            # Get a list of key aliases. This will be used to discard AWS managed keys from rotation consideration.
+            aws_managed_keys = []
+            keyAliases = kms_client.list_aliases()['Aliases']
+            for key in keyAliases:
+              if 'TargetKeyId' in key and key['AliasName'].startswith('alias/aws'):
+                aws_managed_keys.append(key['TargetKeyId'])
+            for key in kms_client.list_keys()['Keys']:
+              # Do not evaluate AWS-managed keys.
+              if not key['KeyId'] in aws_managed_keys:
+                try:
+                  is_compliant = kms_client.get_key_rotation_status(KeyId = key['KeyId'])['KeyRotationEnabled']
+                except:
+                  is_compliant = True
+                keyIdentifier = ''
+                kIdentifier1 =  getKeyAlias(keyAliases, key['KeyId'])
+                if kIdentifier1 == '' :
+                  keyIdentifier = ' KeyId = ' + key['KeyId']
+                else:
+                  keyIdentifier = ' Key Alias = ' + kIdentifier1
+                if is_compliant: annotation = 'Key rotation is enabled for the specified CMK.' +  keyIdentifier
+                else: annotation = 'Key rotation is not enabled for the specified CMK.' + keyIdentifier
+                evaluations.append(
+                  {
+                    'ComplianceResourceType': 'AWS::KMS::Key',
+                    'ComplianceResourceId': key['KeyId'],
+                    'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                    'Annotation': annotation,
+                    'OrderingTimestamp': datetime.datetime.now()
+                  }
+                )
+            response = config_client.put_evaluations(
+              Evaluations = evaluations,
+              ResultToken = event['resultToken']
+            )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateCMKsRotation:
+    Type: AWS::Config::ConfigRule
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateCMKsRotation
+    - EvaluateCMKsRotationLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-KmsCustomerKeysMustBeRotated
+      Description: CIS 2.8 - Ensure rotation for customer created CMKs is enabled
+        (Scored).
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::KMS::Key
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ScheduledNotification
+          MaximumExecutionFrequency: One_Hour
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateCMKsRotation
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 2.9   Ensure VPC flow logging is enabled in all VPCs (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateVpcFlowLogsLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateVpcFlowLogs
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateVpcFlowLogs
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateVpcFlowLogs:
+    Type: AWS::Lambda::Function
+    Condition: IsLevel2
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateVpcFlowLogs
+      Description: Evaluates whether VPC flow logging is enabled
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          def evaluate_compliance(config_item, vpc_id):
+            if config_item['configurationItemStatus'] == "ResourceDeleted":
+              return 'NOT_APPLICABLE'
+            if (config_item['resourceType'] != 'AWS::EC2::VPC'):
+              return 'NOT_APPLICABLE'
+            elif is_flow_logs_enabled(vpc_id):
+              return 'COMPLIANT'
+            else:
+              return 'NON_COMPLIANT'
+          def is_flow_logs_enabled(vpc_id):
+              ec2 = boto3.client('ec2')
+              # Get the vpc flow logs details
+              response = ec2.describe_flow_logs(
+                Filter=[
+                  {
+                    'Name': 'resource-id',
+                    'Values': [vpc_id,]
+                  },
+                ],
+              )
+              # evaluate vpc flow logs compliance
+              if response['FlowLogs']:
+                return True
+          def lambda_handler(event, context):
+              invoking_event = json.loads(event['invokingEvent'])
+              compliance_value = 'NOT_APPLICABLE'
+              vpc_id = invoking_event['configurationItem']['resourceId']
+              compliance_value = evaluate_compliance(invoking_event['configurationItem'], vpc_id)
+              config = boto3.client('config')
+              response = config.put_evaluations(
+                Evaluations=[
+                  {
+                    'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
+                    'ComplianceResourceId': vpc_id,
+                    'ComplianceType': compliance_value,
+                    'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
+                  },
+                ],
+                ResultToken=event['resultToken']
+              )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateVpcFlowLogs:
+    Type: AWS::Config::ConfigRule
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateVpcFlowLogs
+    - EvaluateVpcFlowLogsLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-EvaluateVpcFlowLogs
+      Description: CIS 2.9 - Ensure VPC flow logging is enabled in all VPCs (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::VPC
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateVpcFlowLogs
+          - Arn
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 4.1   Ensure no security groups allow ingress from 0.0.0.0/0 to port 22 (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  ConfigRuleForEvaluateSecurityGroupsSsh:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-SecurityGroupsMustRestrictSshTraffic
+      Description: CIS 4.1 - Ensure no security groups allow ingress from 0.0.0.0/0
+        to port 22 (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::SecurityGroup
+      Source:
+        Owner: AWS
+        SourceIdentifier: INCOMING_SSH_DISABLED
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 4.2   Ensure no security groups allow ingress from 0.0.0.0/0 to port 3389 (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  ConfigRuleForEvaluateSecurityGroupsRdp:
+    Type: AWS::Config::ConfigRule
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-SecurityGroupsMustDisallowTcpTraffic
+      Description: CIS 4.2 - Ensure no security groups allow ingress from 0.0.0.0/0
+        to port 3389 (Scored)
+      InputParameters:
+        blockedPort1: '3389'
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::SecurityGroup
+      Source:
+        Owner: AWS
+        SourceIdentifier: RESTRICTED_INCOMING_TRAFFIC
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 4.3   Ensure the default security group of every VPC restricts all traffic (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  EvaluateDefaultSecurityGroupLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateDefaultSecurityGroup
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName:
+        !GetAtt
+        - FunctionForEvaluateDefaultSecurityGroup
+        - Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  FunctionForEvaluateDefaultSecurityGroup:
+    Type: AWS::Lambda::Function
+    Condition: IsLevel2
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateVpcDefaultSecurityGroups
+      Description: Evaluates whether VPC default security groups restrict all traffic
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          def lambda_handler(event, context):
+            is_compliant = True
+            invoking_event = json.loads(event['invokingEvent'])
+            annotation = ''
+            security_group_id = invoking_event['configurationItem']['resourceId']
+            # Get security groups details
+            security_group = boto3.client('ec2').describe_security_groups(GroupIds=[security_group_id])['SecurityGroups']
+            # evaluate the default security groups compliance
+            if security_group[0]['GroupName'] == 'default':
+              if security_group[0]['IpPermissions']:
+                annotation = annotation + 'The security group has ingress rules in place.'
+                is_compliant = False
+              if security_group[0]['IpPermissionsEgress']:
+                annotation = annotation + ' The security group has egress rules in place.'
+                is_compliant = False
+              evaluations = [
+                {
+                  'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
+                  'ComplianceResourceId': security_group_id,
+                  'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                  'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
+                }
+              ]
+              if annotation: evaluations[0]['Annotation'] = annotation
+              response = boto3.client('config').put_evaluations(
+                Evaluations = evaluations,
+                ResultToken = event['resultToken']
+              )
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role:
+        !GetAtt
+        - MasterConfigRole
+        - Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigRuleForEvaluateDefaultSecurityGroup:
+    Type: AWS::Config::ConfigRule
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForEvaluateDefaultSecurityGroup
+    - EvaluateVpcFlowLogsLambdaInvokePermission
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      ConfigRuleName: CIS-VpcDefaultSecurityGroupsMustRestrictAllTraffic
+      Description: CIS 4.3 - Ensure the default security group of every VPC restricts
+        all traffic (Scored)
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::SecurityGroup
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier:
+          !GetAtt
+          - FunctionForEvaluateDefaultSecurityGroup
+          - Arn
+
+#====================================================================================================
+# CIS 4.4   Ensure routing tables for VPC peering are "least access"
+#====================================================================================================
+  FunctionForVpcPeeringRouteTablesRule:
+    Type: AWS::Lambda::Function
+    Condition: IsLevel2
+    DependsOn:
+    - MasterConfigRole
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    Properties:
+      FunctionName: CIS-EvaluateVpcPeeringRouteTables
+      Code:
+        ZipFile: |
+          #==================================================================================================
+          # Function: EvaluateVpcPeeringRouteTables
+          # Purpose:  Evaluates whether VPC route tables are least access
+          #==================================================================================================
+          import boto3
+          import json
+          def lambda_handler(event, context):
+            is_compliant = True
+            invoking_event = json.loads(event['invokingEvent'])
+            annotation = ''
+            route_table_id = invoking_event['configurationItem']['resourceId']
+            #print (json.dumps(boto3.client('ec2').describe_route_tables(RouteTableIds=[route_table_id])))
+            for route_table in boto3.client('ec2').describe_route_tables(RouteTableIds=[route_table_id])['RouteTables']:
+              for route in route_table['Routes']:
+                if 'VpcPeeringConnectionId' in route:
+                  if int(str(route['DestinationCidrBlock']).split("/", 1)[1]) < 24:
+                    is_compliant = False
+                    annotation = 'VPC peered route table has a large CIDR block destination.'
+              evaluations = [
+                {
+                  'ComplianceResourceType': invoking_event['configurationItem']['resourceType'],
+                  'ComplianceResourceId': route_table_id,
+                  'ComplianceType': 'COMPLIANT' if is_compliant else 'NON_COMPLIANT',
+                  'OrderingTimestamp': invoking_event['configurationItem']['configurationItemCaptureTime']
+                }
+              ]
+              if annotation: evaluations[0]['Annotation'] = annotation
+              response = boto3.client('config').put_evaluations(
+              Evaluations = evaluations,
+              ResultToken = event['resultToken'])
+      Description: Evaluates whether VPC peered route tables are least access
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role: !GetAtt MasterConfigRole.Arn
+      Runtime: python2.7
+      Timeout: 10
+  ConfigPermissionToCallVpcPeeringRouteTablesLambda:
+    Type: AWS::Lambda::Permission
+    Condition: IsLevel2
+    DependsOn: FunctionForVpcPeeringRouteTablesRule
+    Properties:
+      FunctionName: !GetAtt FunctionForVpcPeeringRouteTablesRule.Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+  ConfigRuleForVpcPeeringRouteTabless:
+    Type: AWS::Config::ConfigRule
+    Condition: IsLevel2
+    DependsOn:
+    - FunctionForVpcPeeringRouteTablesRule
+    - ConfigPermissionToCallVpcPeeringRouteTablesLambda
+    Properties:
+      ConfigRuleName: CIS-VpcPeeringRouteTablesMustBeLeastAccess
+      Description: CIS 4.4 - Evaluates whether VPC peered route tables are least access
+      Scope:
+        ComplianceResourceTypes:
+        - AWS::EC2::RouteTable
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceDetails:
+        - EventSource: aws.config
+          MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier: !GetAtt FunctionForVpcPeeringRouteTablesRule.Arn
+
+
+#===============================================================================================================================
+# MetricFilter and CloudWatch Alarm Section
+#===============================================================================================================================
+
+# ------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.1   Ensure a log metric filter and alarm exist for unauthorized API calls (Scored)
+# ------------------------------------------------------------------------------------------------------------------------------------
+  UnauthorizedApiCallsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      AlarmName: CIS-Unauthorized Activity Attempt
+      AlarmDescription: Alarm if Multiple unauthorized actions or logins attempted
+      MetricName: UnauthorizedAttemptCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: '1'
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - !Ref AlarmNotificationTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  UnauthorizedApiCallsFilter:
+    Type: AWS::Logs::MetricFilter
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      LogGroupName: !GetAtt ResourceForGetCloudWatchLogName.LogName
+      FilterPattern: |-
+        {
+          ($.errorCode = "*UnauthorizedOperation") ||
+          ($.errorCode = "AccessDenied*")
+        }
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: CloudTrailMetrics
+        MetricName: UnauthorizedAttemptCount
+
+# ------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.2   Ensure a log metric filter and alarm exist for Management Console sign-in without MFA (Scored)
+# ------------------------------------------------------------------------------------------------------------------------------------
+  NoMfaConsoleLoginsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    - UnauthorizedApiCallsAlarm
+    Properties:
+      AlarmName: CIS-Console Signin Without MFA
+      AlarmDescription: Alarm if there is a Management Console sign-in without MFA
+      MetricName: ConsoleSigninWithoutMFA
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - !Ref AlarmNotificationTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  NoMfaConsoleLoginsFilter:
+    Type: AWS::Logs::MetricFilter
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      LogGroupName: !GetAtt ResourceForGetCloudWatchLogName.LogName
+      FilterPattern: |-
+        {
+          ($.eventName = "ConsoleLogin") &&
+          ($.additionalEventData.MFAUsed != "Yes") &&
+          ($.responseElements.ConsoleLogin != "Failure") &&
+          ($.additionalEventData.SamlProviderArn NOT EXISTS)
+        }
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: CloudTrailMetrics
+        MetricName: ConsoleSigninWithoutMFA
+
+# ------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 1.1   Avoid the use of the "root" account (Scored)
+# CIS AWS Foundations Benchmark - 3.3   Ensure a log metric filter and alarm exist for usage of "root" account  (Scored)
+# ------------------------------------------------------------------------------------------------------------------------------------
+  RootAccountLoginsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    - NoMfaConsoleLoginsAlarm
+    Properties:
+      AlarmName: CIS-IAM Root Activity
+      AlarmDescription: Alarm if a 'root' user uses the account
+      MetricName: RootUserEventCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - !Ref AlarmNotificationTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  RootAccountLoginsFilter:
+    Type: AWS::Logs::MetricFilter
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      LogGroupName: !GetAtt ResourceForGetCloudWatchLogName.LogName
+      FilterPattern: |-
+        {
+          ($.userIdentity.type = "Root") &&
+          ($.userIdentity.invokedBy NOT EXISTS) &&
+          ($.eventType != "AwsServiceEvent")
+        }
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: CloudTrailMetrics
+        MetricName: RootUserEventCount
+
+# ------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.4   Ensure a log metric filter and alarm exist for IAM policy changes (Scored)
+# ------------------------------------------------------------------------------------------------------------------------------------
+  IamPolicyChangesCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: CIS-DetectIamPolicyChanges
+      Description: Publishes formatted IAM policy change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - iam.amazonaws.com
+          eventName:
+          - CreateAccessKey
+          - DeleteAccessKey
+          - DeleteRolePolicy
+          - DeleteUserPolicy
+          - PutGroupPolicy
+          - PutRolePolicy
+          - PutUserPolicy
+          - CreatePolicy
+          - DeletePolicy
+          - CreatePolicyVersion
+          - DeletePolicyVersion
+          - AttachRolePolicy
+          - DetachRolePolicy
+          - AttachUserPolicy
+          - DetachUserPolicy
+          - AttachGroupPolicy
+          - DetachGroupPolicy
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# ------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.5   Ensure a log metric filter and alarm exist for CloudTrail configuration changes (Scored)
+# ------------------------------------------------------------------------------------------------------------------------------------
+  CloudTrailCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: CIS-DetectCloudTrailChanges
+      Description: Publishes formatted CloudTrail change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - cloudtrail.amazonaws.com
+          eventName:
+          - StopLogging
+          - DeleteTrail
+          - UpdateTrail
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# --------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.6 Ensure a log metric filter and alarm exist for AWS Management Console authentication failures (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------
+  FailedConsoleLoginsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    - RootAccountLoginsAlarm
+    Properties:
+      AlarmName: CIS-Console Login Failures
+      AlarmDescription: Alarm if there are AWS Management Console authentication failures
+      MetricName: ConsoleLoginFailures
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - !Ref AlarmNotificationTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  FailedConsoleLoginsFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: IsLevel2
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      LogGroupName: !GetAtt ResourceForGetCloudWatchLogName.LogName
+      FilterPattern: |-
+        {
+          ($.eventName = ConsoleLogin) &&
+          ($.errorMessage = "Failed authentication")
+        }
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: CloudTrailMetrics
+        MetricName: ConsoleLoginFailures
+
+# -------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.7   Ensure a log metric filter and alarm exist for disabling or scheduled deletion of customer created CMKs (Scored)
+# -------------------------------------------------------------------------------------------------------------------------------------------------------
+  DisabledOrDeletedCmksAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    - FailedConsoleLoginsAlarm
+    Properties:
+      AlarmName: CIS-KMS Key Disabled or Scheduled for Deletion
+      AlarmDescription: Alarm if customer created CMKs get disabled or scheduled for
+        deletion
+      MetricName: KMSCustomerKeyDeletion
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - !Ref AlarmNotificationTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+  DisabledOrDeletedCmksFilter:
+    Type: AWS::Logs::MetricFilter
+    Condition: IsLevel2
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      LogGroupName: !GetAtt ResourceForGetCloudWatchLogName.LogName
+      FilterPattern: |-
+        {
+          ($.eventSource = kms.amazonaws.com) &&
+          (($.eventName=DisableKey) || ($.eventName=ScheduleKeyDeletion))
+        }
+      MetricTransformations:
+      - MetricValue: '1'
+        MetricNamespace: CloudTrailMetrics
+        MetricName: KMSCustomerKeyDeletion
+
+# -------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.8   Ensure a log metric filter and alarm exist for S3 bucket policy changes (Scored)
+# -------------------------------------------------------------------------------------------------------------------------------------------------------
+  DetectS3BucketPolicyChanges:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: CIS-DetectS3BucketPolicyChanges
+      Description: Publishes formatted S3 bucket policy change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - s3.amazonaws.com
+          eventName:
+          - PutBucketAcl
+          - PutBucketPolicy
+          - PutBucketCors
+          - PutBucketLifecycle
+          - PutBucketReplication
+          - DeleteBucketPolicy
+          - DeleteBucketCors
+          - DeleteBucketLifecycle
+          - DeleteBucketReplication
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# -------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.9   Ensure a log metric filter and alarm exist for AWS Config configuration changes (Scored)
+# -------------------------------------------------------------------------------------------------------------------------------------------------------
+  DetectConfigChanges:
+    Type: AWS::Events::Rule
+    Condition: IsLevel2
+    Properties:
+      Name: CIS-DetectConfigChanges
+      Description: Publishes formatted Config change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - config.amazonaws.com
+          eventName:
+          - PutConfigurationRecorder
+          - StopConfigurationRecorder
+          - DeleteDeliveryChannel
+          - PutDeliveryChannel
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# ------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.10  Ensure a log metric filter and alarm exist for security group changes (Scored)
+# ------------------------------------------------------------------------------------------------------------------------------------
+  SecurityGroupChangesCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsLevel2
+    Properties:
+      Name: CIS-DetectSecurityGroupChanges
+      Description: Publishes formatted security group change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - ec2.amazonaws.com
+          eventName:
+          - AuthorizeSecurityGroupIngress
+          - AuthorizeSecurityGroupEgress
+          - RevokeSecurityGroupIngress
+          - RevokeSecurityGroupEgress
+          - CreateSecurityGroup
+          - DeleteSecurityGroup
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.11  Ensure a log metric filter and alarm exist for changes to Network Access Control Lists (NACL) (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  NetworkAclChangesCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsLevel2
+    Properties:
+      Name: CIS-DetectNetworkAclChanges
+      Description: Publishes formatted network ACL change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - ec2.amazonaws.com
+          eventName:
+          - CreateNetworkAcl
+          - CreateNetworkAclEntry
+          - DeleteNetworkAcl
+          - DeleteNetworkAclEntry
+          - ReplaceNetworkAclEntry
+          - ReplaceNetworkAclAssociation
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - 3.12  Ensure a log metric filter and alarm exist for changes to network gateways (Scored)
+# CIS AWS Foundations Benchmark - 3.13  Ensure a log metric filter and alarm exist for route table changes (Scored)
+# CIS AWS Foundations Benchmark - 3.14  Ensure a log metric filter and alarm exist for VPC changes (Scored)
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  NetworkChangeCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: CIS-DetectNetworkChangeEvents
+      Description: Publishes formatted network change events to an SNS topic
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - ec2.amazonaws.com
+          eventName:
+          - AcceptVpcPeeringConnection
+          - AttachClassicLinkVpc
+          - AttachInternetGateway
+          - AssociateRouteTable
+          - CreateCustomerGateway
+          - CreateInternetGateway
+          - CreateRoute
+          - CreateRouteTable
+          - CreateVpc
+          - CreateVpcPeeringConnection
+          - DeleteCustomerGateway
+          - DeleteInternetGateway
+          - DeleteRoute
+          - DeleteRouteTable
+          - DeleteDhcpOptions
+          - DeleteVpc
+          - DeleteVpcPeeringConnection
+          - DetachClassicLinkVpc
+          - DetachInternetGateway
+          - DisableVpcClassicLink
+          - DisassociateRouteTable
+          - EnableVpcClassicLink
+          - ModifyVpcAttribute
+          - RejectVpcPeeringConnection
+          - ReplaceRoute
+          - ReplaceRouteTableAssociation
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - CloudWatch Event rule for Config Compliance changes
+# All reporting of changes to compliance status to Config rules is handled by this CloudWatch Events rule which then publishes to SNS
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  ConfigRulesComplianceChangeCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: CIS-DetectConfigRulesComplianceChanges
+      Description: Publishes formatted Config Rules Compliance Changes events to an SNS topic
+      EventPattern:
+        detail-type:
+        - Config Rules Compliance Change
+        source:
+        - aws.config
+        detail:
+          configRuleName:
+          - CIS-UsersMustHaveMfaEnabled
+          - CIS-RotateUserPasswords
+          - CIS-RotateAccessKeys
+          - CIS-KmsCustomerKeysMustBeRotated
+          - CIS-SecurityGroupsMustRestrictSshTraffic
+          - CIS-VpcDefaultSecurityGroupsMustRestrictAllTraffic
+          - CIS-SecurityGroupsMustDisallowTcpTraffic
+          - CIS-IamPasswordPolicyMustMeetRequirements
+          - CIS-CloudTrailMustBeActive
+          - CIS-EvaluateVpcFlowLogs
+          - CIS-RootAccountMustHaveMfaEnabled
+          - CIS-EvaluateFullAdminPrivilegesPolicies
+          - CIS-InstancesMustUseIamRoles
+          - CIS-UsersMustNotHaveAssociatedPolicies
+          - CIS-AwsSupportRoleExists
+          - CIS-CloudTrailBucketMustBeSecure
+          - CIS-VpcPeeringRouteTablesMustBeLeastAccess
+          - CIS-CloudTrailLogsMustBeValidatedAndEncrypted
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+        Id: TargetFunctionV1
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# CIS AWS Foundations Benchmark - Alarm Notification Topic - NotificationEmailAddressForCloudWatchAlarms
+# Any reporting / alerts to end user should be via an SNS Topic – the subscriber is the provided email address
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    DependsOn:
+    - ResourceForEvaluateCISBenchmarkPreconditions
+    - ResourceForGetCloudWatchLogName
+    Properties:
+      TopicName: CIS-NotificationTopic
+      Subscription:
+      - Endpoint: !Ref NotificationEmailAddressForCloudWatchAlarms
+        Protocol: email
+
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+# Cloudwatch Event rules Lambda function and IAM Role
+# Any reporting / alerts to end user should be via an SNS Topic – the subscriber is the provided email address
+# --------------------------------------------------------------------------------------------------------------------------------------------------------
+  RoleForCloudWatchEvents:
+    Type: AWS::IAM::Role
+    DependsOn: AlarmNotificationTopic
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - !Sub
+        - arn:${Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - Partition:
+            !If
+            - GovCloudCondition
+            - aws-us-gov
+            - aws
+      Policies:
+      - PolicyName: CIS-AllowSnsPublish
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action: sns:Publish
+            Resource: !Ref AlarmNotificationTopic
+  FunctionToFormatCloudWatchEvent:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - RoleForCloudWatchEvents
+    - AlarmNotificationTopic
+    Properties:
+      FunctionName: CIS-FormatCloudWatchEvent
+      Code:
+        ZipFile: !Sub |
+          #==================================================================================================
+          # Function: process-cloudwatch-event
+          # Purpose:  Processes CloudWatch Event before publishing to SNS.
+          #==================================================================================================
+          import boto3
+          import json
+          SNS_TOPIC_ARN = '${AlarmNotificationTopic}'
+          #==================================================================================================
+          # Function handler
+          #==================================================================================================
+          def lambda_handler(event, context):
+            source = event['source']
+            if source == 'aws.config':
+              response = boto3.client('sns').publish(
+                TopicArn = SNS_TOPIC_ARN,
+                Message = json.dumps(event, indent=4),
+                Subject = 'NOTIFICATION {0} : {1}'.format(event['detail-type'], event['detail']['configRuleName']),
+                MessageStructure = 'raw'
+              )
+            else:
+              response = boto3.client('sns').publish(
+                TopicArn = SNS_TOPIC_ARN,
+                Message = json.dumps(event, indent=4),
+                Subject = 'NOTIFICATION {0}:{1}'.format(event['detail']['eventSource'], event['detail']['eventName']),
+                MessageStructure = 'raw'
+              )
+      Description: Formats a given CloudWatch Event to be published to an SNS topic
+      Handler: index.lambda_handler
+      MemorySize: 1024
+      Role: !GetAtt RoleForCloudWatchEvents.Arn
+      Runtime: python2.7
+      Timeout: 5
+  LambdaPermissionForCloudTrailCloudWatchEventRules:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+    - FunctionToFormatCloudWatchEvent
+    Properties:
+      FunctionName: !GetAtt FunctionToFormatCloudWatchEvent.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+...
