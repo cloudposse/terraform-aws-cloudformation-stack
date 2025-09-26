@@ -16,5 +16,7 @@ module "cloudformation_stack" {
   })
   capabilities = var.capabilities
 
-  context = module.this.context
+  context = merge(module.this.context, {
+    name = "${module.this.name}-${random_string.suffix.result}"
+  })
 }
