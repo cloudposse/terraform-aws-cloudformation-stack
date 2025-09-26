@@ -6,7 +6,7 @@ stage = "test"
 
 name = "cloudformation-stack"
 
-template_url = "https://aws-quickstart.s3.amazonaws.com/quickstart-compliance-cis-benchmark/templates/main.template"
+template_url = "https://raw.githubusercontent.com/pinkbear/quickstart-compliance-cis-benchmark/1607e072c0744906ce1b072796172b93a8897d1f/templates/cis-benchmark.template"
 
 parameters = {
   NotificationEmailAddressForCloudWatchAlarms = "notify-me@example.com"
