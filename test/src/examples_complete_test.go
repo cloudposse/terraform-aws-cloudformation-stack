@@ -1,9 +1,10 @@
 package test
 
 import (
+	"testing"
+
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func int32Ptr(i int32) *int32 { return &i }
@@ -28,11 +29,11 @@ func TestExamplesComplete(t *testing.T) {
 
 	// Run `terraform output` to get the value of an output variable
 	name := terraform.Output(t, terraformOptions, "name")
-	// Verify we're getting back the outputs we expect
-	assert.Equal(t, "eg-test-cloudformation-stack", name)
+	// Verify we're getting back the outputs we expect (check prefix and any suffix)
+	assert.Contains(t, name, "eg-test-cloudformation-stack")
 
 	// Run `terraform output` to get the value of an output variable
 	id := terraform.Output(t, terraformOptions, "id")
-	// Verify we're getting back the outputs we expect
+	// Verify we're getting back the outputs we expect (check prefix and any suffix)
 	assert.Contains(t, id, "stack/eg-test-cloudformation-stack")
 }

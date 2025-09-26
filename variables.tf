@@ -1,6 +1,13 @@
 variable "template_url" {
   type        = string
+  default     = null
   description = "Amazon S3 bucket URL location of a file containing the CloudFormation template body. Maximum file size: 460,800 bytes"
+}
+
+variable "template_body" {
+  type        = string
+  default     = null
+  description = "Structure containing the CloudFormation template body. Maximum size: 51,200 bytes"
 }
 
 variable "parameters" {
@@ -31,5 +38,11 @@ variable "policy_body" {
   type        = string
   default     = ""
   description = "Structure containing the stack policy body"
+}
+
+variable "disable_rollback" {
+  type        = bool
+  default     = false
+  description = "Set to true to disable rollback of the stack if stack creation failed. You can specify either on_failure or disable_rollback, but not both."
 }
 

@@ -1,0 +1,29 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Basic test template for CloudFormation stack module'
+
+Parameters:
+  StackSuffix:
+    Type: String
+    Description: 'Unique suffix for the stack and bucket names'
+    Default: 'test'
+
+Resources:
+  TestBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${StackSuffix}-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+
+Outputs:
+  BucketName:
+    Description: 'Name of the created S3 bucket'
+    Value: !Ref TestBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
