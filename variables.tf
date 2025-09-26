@@ -33,3 +33,9 @@ variable "policy_body" {
   description = "Structure containing the stack policy body"
 }
 
+variable "disable_rollback" {
+  type        = bool
+  default     = false
+  description = "Set to true to disable rollback on stack creation failure. When true, on_failure is not set and rollback is disabled."
+}
+

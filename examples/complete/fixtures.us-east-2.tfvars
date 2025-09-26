@@ -18,3 +18,6 @@ parameters = {
 }
 
 capabilities = ["CAPABILITY_IAM"]
+
+# Example: Disable rollback on stack creation failure
+# disable_rollback = true
