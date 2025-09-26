@@ -12,7 +12,7 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
     Properties:
-      BucketName: !Sub '${AWS::StackName}-bucket-${StackSuffix}-${AWS::AccountId}'
+      BucketName: !Sub '${StackSuffix}-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true

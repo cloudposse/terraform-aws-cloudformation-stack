@@ -12,7 +12,7 @@ module "cloudformation_stack" {
   source        = "../../"
   template_body = file("${path.module}/example.template")
   parameters = merge(var.parameters, {
-    StackSuffix = "test-${formatdate("YYYYMMDD-hhmmss", timestamp())}-${random_string.suffix.result}"
+    StackSuffix = "t${formatdate("MMDDhh", timestamp())}${random_string.suffix.result}"
   })
   capabilities = var.capabilities
 
