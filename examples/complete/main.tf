@@ -4,8 +4,7 @@ provider "aws" {
 
 module "cloudformation_stack" {
   source        = "../../"
-  template_url  = var.template_url
-  template_body = var.template_body
+  template_body = file("${path.module}/cis-benchmark.template")
   parameters    = var.parameters
   capabilities  = var.capabilities
 
