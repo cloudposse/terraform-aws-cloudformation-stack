@@ -8,7 +8,10 @@ resource "aws_cloudformation_stack" "default" {
   parameters   = var.parameters
   capabilities = var.capabilities
 
-  on_failure         = var.on_failure
+  # When disable_rollback is true, on_failure should not be set (or set to null)
+  # When disable_rollback is false, use the value of var.on_failure
+  on_failure         = var.disable_rollback ? null : var.on_failure
+  disable_rollback   = var.disable_rollback
   timeout_in_minutes = var.timeout_in_minutes
 
   policy_body = var.policy_body
